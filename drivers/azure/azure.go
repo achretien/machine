@@ -19,6 +19,7 @@ import (
 	"github.com/docker/machine/ssh"
 	"github.com/docker/machine/state"
 	"github.com/docker/machine/utils"
+	"io/ioutil"
 )
 
 type Driver struct {
@@ -211,10 +212,10 @@ func (d *Driver) PreCreateCheck() error {
 
 	// check azure DNS to make sure name is available
 
-	if available, response, err := hostedservice.NewClient(client).CheckHostedServiceNameAvailability(d.MachineName); err != nil {
+	if response, err := hostedservice.NewClient(client).CheckHostedServiceNameAvailability(d.MachineName); err != nil {
 		return err
-	} else if !available {
-		return errors.New(response)
+	} else if !response.Result {
+		return errors.New(response.Reason)
 	}
 
 	return nil
@@ -227,10 +228,7 @@ func (d *Driver) Create() error {
 	}
 
 	log.Info("Creating Azure Role...")
-	role, err := vmutils.NewVMConfiguration(d.MachineName, d.Size)
-	if err != nil {
-		return err
-	}
+	role := vmutils.NewVMConfiguration(d.MachineName, d.Size)
 
 	log.Debug("Configure Role with image...")
 	if err := vmutils.ConfigureDeploymentFromPlatformImage(&role, d.Image, "", ""); err != nil {
@@ -373,9 +371,9 @@ func (d *Driver) Remove() error {
 
 	hostClient := hostedservice.NewClient(client)
 
-	if available, _, err := hostClient.CheckHostedServiceNameAvailability(d.MachineName); err != nil {
+	if response, err := hostClient.CheckHostedServiceNameAvailability(d.MachineName); err != nil {
 		return err
-	} else if available {
+	} else if response.Result {
 		return nil
 	}
 
@@ -449,7 +447,13 @@ func (d *Driver) setUserSubscription() (client azure.Client, err error) {
 	if d.PublishSettingsFilePath != "" {
 		return azure.ClientFromPublishSettingsFile(d.PublishSettingsFilePath, "")
 	}
-	return azure.NewClient(d.SubscriptionID, d.SubscriptionCert)
+
+	subscriptionCertContent, err := ioutil.ReadFile(d.SubscriptionCert)
+	if err != nil {
+		return client, err
+	}
+
+	return azure.NewClient(d.SubscriptionID, subscriptionCertContent)
 }
 
 func (d *Driver) addDockerEndpoint(role *virtualmachine.Role) error {
