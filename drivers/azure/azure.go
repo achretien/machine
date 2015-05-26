@@ -238,7 +238,11 @@ func (d *Driver) PreCreateCheck() error {
 		found := false
 		for _, hostedService := range listHostedServicesResponse.HostedServices {
 			if hostedService.ServiceName == d.CloudServiceName {
-				log.Info("Cloud Service found")
+				log.Info("Cloud Service found.")
+				if d.Location != hostedService.Location {
+					log.Info("Overwrite location with Cloud Service location.")
+					d.Location = hostedService.Location
+				}
 				found = true
 				break
 			}
