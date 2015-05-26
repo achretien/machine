@@ -10,7 +10,7 @@ import (
 
 	azure "github.com/Azure/azure-sdk-for-go/management"
 	"github.com/Azure/azure-sdk-for-go/management/hostedservice"
-	"github.com/Azure/azure-sdk-for-go/management/virtualmachine"
+	vm "github.com/Azure/azure-sdk-for-go/management/virtualmachine"
 	"github.com/Azure/azure-sdk-for-go/management/vmutils"
 
 	"github.com/codegangsta/cli"
@@ -294,18 +294,18 @@ func (d *Driver) Create() error {
 	}
 
 	log.Debug("Enable public SSH...")
-	if err := vmutils.ConfigureWithPublicSSH(&role); err != nil {
+	if err := vmutils.ConfigureWithExternalPort(&role, "SSH", 22, d.GetSSHPort(), vm.InputEndpointProtocolTCP); err != nil {
 		return err
 	}
 
 	log.Debug("Authorizing ports...")
-	if err := d.addDockerEndpoint(&role); err != nil {
+	if err := vmutils.ConfigureWithExternalPort(&role, "Docker", d.DockerPort, d.DockerPort, vm.InputEndpointProtocolTCP); err != nil {
 		return err
 	}
 
 	log.Debug("Creating VM...")
 
-	operationID, err := virtualmachine.NewClient(client).CreateDeployment(role, d.CloudServiceName, virtualmachine.CreateDeploymentOptions{})
+	operationID, err := vm.NewClient(client).CreateDeployment(role, d.CloudServiceName, vm.CreateDeploymentOptions{})
 	if err != nil {
 		return err
 	}
@@ -331,7 +331,7 @@ func (d *Driver) GetState() (state.State, error) {
 		return state.Error, err
 	}
 
-	deployment, err := virtualmachine.NewClient(client).GetDeployment(d.CloudServiceName, d.MachineName)
+	deployment, err := vm.NewClient(client).GetDeployment(d.CloudServiceName, d.MachineName)
 	if err != nil {
 		if strings.Contains(err.Error(), "Code: ResourceNotFound") {
 			return state.Error, errors.New("Azure host was not found. Please check your Azure subscription.")
@@ -342,13 +342,13 @@ func (d *Driver) GetState() (state.State, error) {
 
 	vmState := deployment.RoleInstanceList[0].PowerState
 	switch vmState {
-	case virtualmachine.PowerStateStarted:
+	case vm.PowerStateStarted:
 		return state.Running, nil
-	case virtualmachine.PowerStateStarting:
+	case vm.PowerStateStarting:
 		return state.Starting, nil
-	case virtualmachine.PowerStateStopped:
+	case vm.PowerStateStopped:
 		return state.Stopped, nil
-	case virtualmachine.PowerStateStopping:
+	case vm.PowerStateStopping:
 		return state.Stopping, nil
 	}
 
@@ -370,7 +370,7 @@ func (d *Driver) Start() error {
 
 	log.Debugf("starting %s", d.MachineName)
 
-	operationID, err := virtualmachine.NewClient(client).StartRole(d.CloudServiceName, d.MachineName, d.MachineName);
+	operationID, err := vm.NewClient(client).StartRole(d.CloudServiceName, d.MachineName, d.MachineName);
 	if err != nil {
 		return err
 	}
@@ -398,7 +398,7 @@ func (d *Driver) Stop() error {
 
 	log.Debugf("stopping %s", d.MachineName)
 
-	operationID, err := virtualmachine.NewClient(client).ShutdownRole(d.CloudServiceName, d.MachineName, d.MachineName)
+	operationID, err := vm.NewClient(client).ShutdownRole(d.CloudServiceName, d.MachineName, d.MachineName)
 	if err != nil {
 		return err
 	}
@@ -450,7 +450,7 @@ func (d *Driver) Restart() error {
 
 	log.Debugf("restarting %s", d.MachineName)
 
-	if _, err := virtualmachine.NewClient(client).RestartRole(d.CloudServiceName, d.MachineName, d.MachineName); err != nil {
+	if _, err := vm.NewClient(client).RestartRole(d.CloudServiceName, d.MachineName, d.MachineName); err != nil {
 		return err
 	}
 
@@ -473,7 +473,7 @@ func (d *Driver) Kill() error {
 
 	log.Debugf("killing %s", d.MachineName)
 
-	operationID, err := virtualmachine.NewClient(client).ShutdownRole(d.CloudServiceName, d.MachineName, d.MachineName)
+	operationID, err := vm.NewClient(client).ShutdownRole(d.CloudServiceName, d.MachineName, d.MachineName)
 	if err != nil {
 		return err
 	}
@@ -502,26 +502,6 @@ func (d *Driver) setUserSubscription() (client azure.Client, err error) {
 	}
 
 	return azure.NewClient(d.SubscriptionID, subscriptionCertContent)
-}
-
-func (d *Driver) addDockerEndpoint(role *virtualmachine.Role) error {
-	configSets := role.ConfigurationSets
-	if len(configSets) == 0 {
-		return errors.New("no configuration set")
-	}
-	for i := 0; i < len(configSets); i++ {
-		if configSets[i].ConfigurationSetType != "NetworkConfiguration" {
-			continue
-		}
-		ep := virtualmachine.InputEndpoint{
-			Name:      "docker",
-			Protocol:  "tcp",
-			Port:      d.DockerPort,
-			LocalPort: d.DockerPort}
-		configSets[i].InputEndpoints = append(configSets[i].InputEndpoints, ep)
-		log.Debugf("added Docker endpoint (port %d) to configuration", d.DockerPort)
-	}
-	return nil
 }
 
 func (d *Driver) generateCertForAzure() error {
