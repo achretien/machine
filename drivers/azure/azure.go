@@ -18,7 +18,6 @@ import (
 	"github.com/docker/machine/log"
 	"github.com/docker/machine/ssh"
 	"github.com/docker/machine/state"
-	"github.com/docker/machine/utils"
 	"io/ioutil"
 	"encoding/base64"
 )
@@ -484,11 +483,6 @@ func (d *Driver) Kill() error {
 
 	d.IPAddress = ""
 	return nil
-}
-
-func generateVMName() string {
-	randomID := utils.TruncateID(utils.GenerateRandomID())
-	return fmt.Sprintf("docker-host-%s", randomID)
 }
 
 func (d *Driver) setUserSubscription() (client azure.Client, err error) {
