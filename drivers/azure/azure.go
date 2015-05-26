@@ -20,15 +20,18 @@ import (
 	"github.com/docker/machine/state"
 	"github.com/docker/machine/utils"
 	"io/ioutil"
+	"encoding/base64"
 )
 
 type Driver struct {
 	IPAddress               string
 	MachineName             string
+	CloudServiceName        string
 	SubscriptionID          string
 	SubscriptionCert        string
 	PublishSettingsFilePath string
 	Location                string
+	Storage                 string
 	Size                    string
 	UserPassword            string
 	Image                   string
@@ -63,6 +66,7 @@ func GetCreateFlags() []cli.Flag {
 			EnvVar: "AZURE_IMAGE",
 			Name:   "azure-image",
 			Usage:  "Azure image name. Default is Ubuntu 14.04 LTS x64",
+			Value:  "b39f27a8b8c64d52b05eac6a62ebad85__Ubuntu-14_04_2-LTS-amd64-server-20150506-en-us-30GB",
 		},
 		cli.StringFlag{
 			EnvVar: "AZURE_LOCATION",
@@ -105,6 +109,14 @@ func GetCreateFlags() []cli.Flag {
 			Name:  "azure-username",
 			Usage: "Azure username",
 			Value: "ubuntu",
+		},
+		cli.StringFlag{
+			Name:  "azure-cloud-service",
+			Usage: "Azure Cloud Service (will be created if not exists)",
+		},
+		cli.StringFlag{
+			Name:  "azure-storage",
+			Usage: "Azure Storage (will be created if not exists)",
 		},
 	}
 }
@@ -186,6 +198,16 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 		d.Image = image
 	}
 
+	d.CloudServiceName = flags.String("azure-cloud-service")
+	if d.CloudServiceName == "" {
+		return errors.New("Please specify azure cloud service param using options: --azure-cloud-service")
+	}
+
+	d.Storage = flags.String("azure-storage")
+	if d.Storage == "" {
+		return errors.New("Please specify azure storage device param using options: --azure-storage")
+	}
+
 	d.Location = flags.String("azure-location")
 	d.Size = flags.String("azure-size")
 
@@ -210,12 +232,34 @@ func (d *Driver) PreCreateCheck() error {
 		return err
 	}
 
-	// check azure DNS to make sure name is available
-
-	if response, err := hostedservice.NewClient(client).CheckHostedServiceNameAvailability(d.MachineName); err != nil {
+	// check if the hosted service belong to the account
+	if listHostedServicesResponse, err := hostedservice.NewClient(client).ListHostedServices(); err != nil {
 		return err
-	} else if !response.Result {
-		return errors.New(response.Reason)
+	} else {
+		found := false
+		for _, hostedService := range listHostedServicesResponse.HostedServices {
+			if hostedService.ServiceName == d.CloudServiceName {
+				log.Info("Cloud Service found")
+				found = true
+				break
+			}
+		}
+		if !found {
+			log.Info("Cloud Service not found. Check if name is available")
+			if response, err := hostedservice.NewClient(client).CheckHostedServiceNameAvailability(d.CloudServiceName); err != nil {
+				return err
+			} else if !response.Result {
+				return errors.New(response.Reason)
+			}
+
+			log.Info("Name is available. Create Cloud Service")
+			if err := hostedservice.NewClient(client).CreateHostedService(hostedservice.CreateHostedServiceParameters{
+				ServiceName: d.CloudServiceName,
+				Location:    d.Location,
+				Label:       base64.StdEncoding.EncodeToString([]byte(d.CloudServiceName))}); err != nil {
+				return err
+			}
+		}
 	}
 
 	return nil
@@ -231,7 +275,11 @@ func (d *Driver) Create() error {
 	role := vmutils.NewVMConfiguration(d.MachineName, d.Size)
 
 	log.Debug("Configure Role with image...")
-	if err := vmutils.ConfigureDeploymentFromPlatformImage(&role, d.Image, "", ""); err != nil {
+	if err := vmutils.ConfigureDeploymentFromPlatformImage(
+		&role,
+		d.Image,
+		fmt.Sprintf("http://%s.blob.core.windows.net/vhds/%s-%s.vhd", d.Storage, d.CloudServiceName, d.MachineName),
+		""); err != nil {
 		return err
 	}
 
@@ -257,7 +305,7 @@ func (d *Driver) Create() error {
 
 	log.Debug("Creating VM...")
 
-	operationID, err := virtualmachine.NewClient(client).CreateDeployment(role, d.MachineName, virtualmachine.CreateDeploymentOptions{})
+	operationID, err := virtualmachine.NewClient(client).CreateDeployment(role, d.CloudServiceName, virtualmachine.CreateDeploymentOptions{})
 	if err != nil {
 		return err
 	}
@@ -494,5 +542,6 @@ func (d *Driver) azureCertPath() string {
 }
 
 func (d *Driver) getHostname() string {
-	return d.MachineName + ".cloudapp.net"
+	return d.CloudServiceName + ".cloudapp.net"
 }
+
