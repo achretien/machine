@@ -331,7 +331,7 @@ func (d *Driver) GetState() (state.State, error) {
 		return state.Error, err
 	}
 
-	deployment, err := virtualmachine.NewClient(client).GetDeployment(d.MachineName, d.MachineName)
+	deployment, err := virtualmachine.NewClient(client).GetDeployment(d.CloudServiceName, d.MachineName)
 	if err != nil {
 		if strings.Contains(err.Error(), "Code: ResourceNotFound") {
 			return state.Error, errors.New("Azure host was not found. Please check your Azure subscription.")
@@ -370,7 +370,7 @@ func (d *Driver) Start() error {
 
 	log.Debugf("starting %s", d.MachineName)
 
-	operationID, err := virtualmachine.NewClient(client).StartRole(d.MachineName, d.MachineName, d.MachineName);
+	operationID, err := virtualmachine.NewClient(client).StartRole(d.CloudServiceName, d.MachineName, d.MachineName);
 	if err != nil {
 		return err
 	}
@@ -398,7 +398,7 @@ func (d *Driver) Stop() error {
 
 	log.Debugf("stopping %s", d.MachineName)
 
-	operationID, err := virtualmachine.NewClient(client).ShutdownRole(d.MachineName, d.MachineName, d.MachineName)
+	operationID, err := virtualmachine.NewClient(client).ShutdownRole(d.CloudServiceName, d.MachineName, d.MachineName)
 	if err != nil {
 		return err
 	}
@@ -419,15 +419,15 @@ func (d *Driver) Remove() error {
 
 	hostClient := hostedservice.NewClient(client)
 
-	if response, err := hostClient.CheckHostedServiceNameAvailability(d.MachineName); err != nil {
+	if response, err := hostClient.CheckHostedServiceNameAvailability(d.CloudServiceName); err != nil {
 		return err
 	} else if response.Result {
 		return nil
 	}
 
-	log.Debugf("removing %s", d.MachineName)
+	log.Debugf("removing %s", d.CloudServiceName)
 
-	operationID, err := hostClient.DeleteHostedService(d.MachineName, true)
+	operationID, err := hostClient.DeleteHostedService(d.CloudServiceName, true)
 	if err != nil {
 		return err
 	}
@@ -450,7 +450,7 @@ func (d *Driver) Restart() error {
 
 	log.Debugf("restarting %s", d.MachineName)
 
-	if _, err := virtualmachine.NewClient(client).RestartRole(d.MachineName, d.MachineName, d.MachineName); err != nil {
+	if _, err := virtualmachine.NewClient(client).RestartRole(d.CloudServiceName, d.MachineName, d.MachineName); err != nil {
 		return err
 	}
 
@@ -473,7 +473,7 @@ func (d *Driver) Kill() error {
 
 	log.Debugf("killing %s", d.MachineName)
 
-	operationID, err := virtualmachine.NewClient(client).ShutdownRole(d.MachineName, d.MachineName, d.MachineName)
+	operationID, err := virtualmachine.NewClient(client).ShutdownRole(d.CloudServiceName, d.MachineName, d.MachineName)
 	if err != nil {
 		return err
 	}
@@ -525,16 +525,12 @@ func (d *Driver) addDockerEndpoint(role *virtualmachine.Role) error {
 }
 
 func (d *Driver) generateCertForAzure() error {
-	if err := ssh.GenerateSSHKey(d.sshKeyPath()); err != nil {
+	if err := ssh.GenerateSSHKey(d.GetSSHKeyPath()); err != nil {
 		return err
 	}
 
-	cmd := exec.Command("openssl", "req", "-x509", "-key", d.sshKeyPath(), "-nodes", "-days", "365", "-newkey", "rsa:2048", "-out", d.azureCertPath(), "-subj", "/C=AU/ST=Some-State/O=InternetWidgitsPtyLtd/CN=\\*")
+	cmd := exec.Command("openssl", "req", "-x509", "-key", d.GetSSHKeyPath(), "-nodes", "-days", "365", "-newkey", "rsa:2048", "-out", d.azureCertPath(), "-subj", "/C=AU/ST=Some-State/O=InternetWidgitsPtyLtd/CN=\\*")
 	return cmd.Run()
-}
-
-func (d *Driver) sshKeyPath() string {
-	return filepath.Join(d.storePath, "id_rsa")
 }
 
 func (d *Driver) azureCertPath() string {
