@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	azure "github.com/MSOpenTech/azure-sdk-for-go"
-	"github.com/MSOpenTech/azure-sdk-for-go/clients/vmClient"
+	azure "github.com/Azure/azure-sdk-for-go/management"
+	"github.com/Azure/azure-sdk-for-go/management/hostedservice"
+	"github.com/Azure/azure-sdk-for-go/management/virtualmachine"
+	"github.com/Azure/azure-sdk-for-go/management/vmutils"
 
 	"github.com/codegangsta/cli"
 	"github.com/docker/machine/drivers"
@@ -202,17 +204,16 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 }
 
 func (d *Driver) PreCreateCheck() error {
-	if err := d.setUserSubscription(); err != nil {
-		return err
-	}
-
-	// check azure DNS to make sure name is available
-	available, response, err := vmClient.CheckHostedServiceNameAvailability(d.MachineName)
+	client, err := d.setUserSubscription()
 	if err != nil {
 		return err
 	}
 
-	if !available {
+	// check azure DNS to make sure name is available
+
+	if available, response, err := hostedservice.NewClient(client).CheckHostedServiceNameAvailability(d.MachineName); err != nil {
+		return err
+	} else if !available {
 		return errors.New(response)
 	}
 
@@ -220,13 +221,19 @@ func (d *Driver) PreCreateCheck() error {
 }
 
 func (d *Driver) Create() error {
-	if err := d.setUserSubscription(); err != nil {
+	client, err := d.setUserSubscription()
+	if err != nil {
 		return err
 	}
 
-	log.Info("Creating Azure machine...")
-	vmConfig, err := vmClient.CreateAzureVMConfiguration(d.MachineName, d.Size, d.Image, d.Location)
+	log.Info("Creating Azure Role...")
+	role, err := vmutils.NewVMConfiguration(d.MachineName, d.Size)
 	if err != nil {
+		return err
+	}
+
+	log.Debug("Configure Role with image...")
+	if err := vmutils.ConfigureDeploymentFromPlatformImage(&role, d.Image, "", ""); err != nil {
 		return err
 	}
 
@@ -236,18 +243,27 @@ func (d *Driver) Create() error {
 	}
 
 	log.Debug("Adding Linux provisioning...")
-	vmConfig, err = vmClient.AddAzureLinuxProvisioningConfig(vmConfig, d.GetSSHUsername(), d.UserPassword, d.azureCertPath(), d.SSHPort)
-	if err != nil {
+	if err := vmutils.ConfigureForLinux(&role, d.MachineName, d.GetSSHUsername(), d.UserPassword); err != nil {
+		return err
+	}
+
+	log.Debug("Enable public SSH...")
+	if err := vmutils.ConfigureWithPublicSSH(&role); err != nil {
 		return err
 	}
 
 	log.Debug("Authorizing ports...")
-	if err := d.addDockerEndpoint(vmConfig); err != nil {
+	if err := d.addDockerEndpoint(&role); err != nil {
 		return err
 	}
 
 	log.Debug("Creating VM...")
-	if err := vmClient.CreateAzureVM(vmConfig, d.MachineName, d.Location); err != nil {
+
+	operationID, err := virtualmachine.NewClient(client).CreateDeployment(role, d.MachineName, virtualmachine.CreateDeploymentOptions{})
+	if err != nil {
+		return err
+	}
+	if err := client.WaitForOperation(operationID, nil); err != nil {
 		return err
 	}
 
@@ -264,11 +280,12 @@ func (d *Driver) GetIP() (string, error) {
 }
 
 func (d *Driver) GetState() (state.State, error) {
-	if err := d.setUserSubscription(); err != nil {
+	client, err := d.setUserSubscription()
+	if err != nil {
 		return state.Error, err
 	}
 
-	dockerVM, err := vmClient.GetVMDeployment(d.MachineName, d.MachineName)
+	deployment, err := virtualmachine.NewClient(client).GetDeployment(d.MachineName, d.MachineName)
 	if err != nil {
 		if strings.Contains(err.Error(), "Code: ResourceNotFound") {
 			return state.Error, errors.New("Azure host was not found. Please check your Azure subscription.")
@@ -277,21 +294,24 @@ func (d *Driver) GetState() (state.State, error) {
 		return state.Error, err
 	}
 
-	vmState := dockerVM.RoleInstanceList.RoleInstance[0].PowerState
+	vmState := deployment.RoleInstanceList[0].PowerState
 	switch vmState {
-	case "Started":
+	case virtualmachine.PowerStateStarted:
 		return state.Running, nil
-	case "Starting":
+	case virtualmachine.PowerStateStarting:
 		return state.Starting, nil
-	case "Stopped":
+	case virtualmachine.PowerStateStopped:
 		return state.Stopped, nil
+	case virtualmachine.PowerStateStopping:
+		return state.Stopping, nil
 	}
 
 	return state.None, nil
 }
 
 func (d *Driver) Start() error {
-	if err := d.setUserSubscription(); err != nil {
+	client, err := d.setUserSubscription()
+	if err != nil {
 		return err
 	}
 
@@ -304,30 +324,40 @@ func (d *Driver) Start() error {
 
 	log.Debugf("starting %s", d.MachineName)
 
-	if err := vmClient.StartRole(d.MachineName, d.MachineName, d.MachineName); err != nil {
+	operationID, err := virtualmachine.NewClient(client).StartRole(d.MachineName, d.MachineName, d.MachineName);
+	if err != nil {
 		return err
 	}
 
-	var err error
+	if err := client.WaitForOperation(operationID, nil); err != nil {
+		return err
+	}
+
 	d.IPAddress, err = d.GetIP()
 	return err
 }
 
 func (d *Driver) Stop() error {
-	if err := d.setUserSubscription(); err != nil {
+	client, err := d.setUserSubscription()
+	if err != nil {
 		return err
 	}
 
 	if vmState, err := d.GetState(); err != nil {
 		return err
-	} else if vmState == state.Stopped {
+	} else if vmState == state.Stopped || vmState == state.Stopping {
 		log.Infof("Host is already stopped")
 		return nil
 	}
 
 	log.Debugf("stopping %s", d.MachineName)
 
-	if err := vmClient.ShutdownRole(d.MachineName, d.MachineName, d.MachineName); err != nil {
+	operationID, err := virtualmachine.NewClient(client).ShutdownRole(d.MachineName, d.MachineName, d.MachineName)
+	if err != nil {
+		return err
+	}
+
+	if err := client.WaitForOperation(operationID, nil); err != nil {
 		return err
 	}
 
@@ -336,10 +366,14 @@ func (d *Driver) Stop() error {
 }
 
 func (d *Driver) Remove() error {
-	if err := d.setUserSubscription(); err != nil {
+	client, err := d.setUserSubscription()
+	if err != nil {
 		return err
 	}
-	if available, _, err := vmClient.CheckHostedServiceNameAvailability(d.MachineName); err != nil {
+
+	hostClient := hostedservice.NewClient(client)
+
+	if available, _, err := hostClient.CheckHostedServiceNameAvailability(d.MachineName); err != nil {
 		return err
 	} else if available {
 		return nil
@@ -347,11 +381,16 @@ func (d *Driver) Remove() error {
 
 	log.Debugf("removing %s", d.MachineName)
 
-	return vmClient.DeleteHostedService(d.MachineName)
+	operationID, err := hostClient.DeleteHostedService(d.MachineName, true)
+	if err != nil {
+		return err
+	}
+
+	return client.WaitForOperation(operationID, nil)
 }
 
 func (d *Driver) Restart() error {
-	err := d.setUserSubscription()
+	client, err := d.setUserSubscription()
 	if err != nil {
 		return err
 	}
@@ -359,11 +398,13 @@ func (d *Driver) Restart() error {
 		return err
 	} else if vmState == state.Stopped {
 		return errors.New("Host is already stopped, use start command to run it")
+	}else if vmState == state.Stopping {
+		return errors.New("Host is stopping, wait a few seconds then use start command to run it")
 	}
 
 	log.Debugf("restarting %s", d.MachineName)
 
-	if err := vmClient.RestartRole(d.MachineName, d.MachineName, d.MachineName); err != nil {
+	if _, err := virtualmachine.NewClient(client).RestartRole(d.MachineName, d.MachineName, d.MachineName); err != nil {
 		return err
 	}
 
@@ -372,7 +413,8 @@ func (d *Driver) Restart() error {
 }
 
 func (d *Driver) Kill() error {
-	if err := d.setUserSubscription(); err != nil {
+	client, err := d.setUserSubscription()
+	if err != nil {
 		return err
 	}
 
@@ -385,7 +427,12 @@ func (d *Driver) Kill() error {
 
 	log.Debugf("killing %s", d.MachineName)
 
-	if err := vmClient.ShutdownRole(d.MachineName, d.MachineName, d.MachineName); err != nil {
+	operationID, err := virtualmachine.NewClient(client).ShutdownRole(d.MachineName, d.MachineName, d.MachineName)
+	if err != nil {
+		return err
+	}
+
+	if err := client.WaitForOperation(operationID, nil); err != nil {
 		return err
 	}
 
@@ -398,15 +445,15 @@ func generateVMName() string {
 	return fmt.Sprintf("docker-host-%s", randomID)
 }
 
-func (d *Driver) setUserSubscription() error {
+func (d *Driver) setUserSubscription() (client azure.Client, err error) {
 	if d.PublishSettingsFilePath != "" {
-		return azure.ImportPublishSettingsFile(d.PublishSettingsFilePath)
+		return azure.ClientFromPublishSettingsFile(d.PublishSettingsFilePath, "")
 	}
-	return azure.ImportPublishSettings(d.SubscriptionID, d.SubscriptionCert)
+	return azure.NewClient(d.SubscriptionID, d.SubscriptionCert)
 }
 
-func (d *Driver) addDockerEndpoint(vmConfig *vmClient.Role) error {
-	configSets := vmConfig.ConfigurationSets.ConfigurationSet
+func (d *Driver) addDockerEndpoint(role *virtualmachine.Role) error {
+	configSets := role.ConfigurationSets
 	if len(configSets) == 0 {
 		return errors.New("no configuration set")
 	}
@@ -414,12 +461,12 @@ func (d *Driver) addDockerEndpoint(vmConfig *vmClient.Role) error {
 		if configSets[i].ConfigurationSetType != "NetworkConfiguration" {
 			continue
 		}
-		ep := vmClient.InputEndpoint{
+		ep := virtualmachine.InputEndpoint{
 			Name:      "docker",
 			Protocol:  "tcp",
 			Port:      d.DockerPort,
 			LocalPort: d.DockerPort}
-		configSets[i].InputEndpoints.InputEndpoint = append(configSets[i].InputEndpoints.InputEndpoint, ep)
+		configSets[i].InputEndpoints = append(configSets[i].InputEndpoints, ep)
 		log.Debugf("added Docker endpoint (port %d) to configuration", d.DockerPort)
 	}
 	return nil

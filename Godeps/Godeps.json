@@ -8,9 +8,8 @@
 			"Rev": "afe77d958c701557ec5dc56f6936fcc194d15520"
 		},
 		{
-			"ImportPath": "github.com/MSOpenTech/azure-sdk-for-go",
-			"Comment": "v1.1-17-g515f3ec",
-			"Rev": "515f3ec74ce6a5b31e934cefae997c97bd0a1b1e"
+			"ImportPath": "github.com/Azure/azure-sdk-for-go",
+			"Rev": "a6f75991aaabdacb1dda9951b7676febd9cff3f4"
 		},
 		{
 			"ImportPath": "github.com/cenkalti/backoff",
