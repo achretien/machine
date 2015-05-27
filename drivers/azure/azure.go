@@ -297,7 +297,7 @@ func (d *Driver) Create() error {
 	}
 
 	log.Debug("Enable public SSH...")
-	if err := vmutils.ConfigureWithExternalPort(&role, "SSH", 22, d.GetSSHPort(), vm.InputEndpointProtocolTCP); err != nil {
+	if err := vmutils.ConfigureWithExternalPort(&role, "SSH", 22, d.SSHPort, vm.InputEndpointProtocolTCP); err != nil {
 		return err
 	}
 
